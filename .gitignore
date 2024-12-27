@@ -1,0 +1,28 @@
+# Zig build directory
+zig-out/
+
+# Zig cache directory (if not using a specific output directory)
+.zig-cache/
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Editor and IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*.bak
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Backup files
+*~
+*.old
+*.bak
+
+# Zig debug files (optional, depending on your setup)
+debug/
