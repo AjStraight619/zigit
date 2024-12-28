@@ -95,7 +95,6 @@ pub const TrackedFiles = struct {
     pub fn load(self: *TrackedFiles) !void {
         const cwd = std.fs.cwd();
 
-        print("Tracked files load path: {s}\n", .{self.path});
         const file = cwd.openFile(self.path, .{ .mode = .read_only }) catch |err| switch (err) {
             error.FileNotFound => return, // No existing index file
             else => return err,
@@ -108,6 +107,7 @@ pub const TrackedFiles = struct {
 
         if (self.files) |*files| {
             // Read the file until EOF and deserialize each metadata entry
+
             while (true) {
                 const metadata = FileMetadata.deserialize(reader, self.allocator) catch |err| switch (err) {
                     error.EndOfStream => break, // Exit the loop when EOF is reached
@@ -146,7 +146,7 @@ pub const TrackedFiles = struct {
             std.sort.block([]const u8, keys, {}, cmpByValue);
 
             for (keys) |key| {
-                print("key after soring: {any}\n", .{key});
+                print("key after soring: {s}\n", .{key});
             }
 
             // Serialize entries in sorted order
@@ -180,24 +180,27 @@ pub const TrackedFiles = struct {
                 }
 
                 const stat = try cwd.statFile(entry.path);
-                const checksum = try calculateChecksum(entry.path, self.allocator);
-                defer self.allocator.free(checksum);
+                var checksum = try calculateChecksum(entry.path, self.allocator);
 
                 if (self.files) |*files| {
-                    const key = try self.allocator.dupe(u8, entry.path); // Key memory managed by caller
+
+                    // Duplicate these values because Walker's memory is temporary and will be invalidated
+                    // after the next() call or deinit(). Duplication ensures the data persists.
+                    const key = try self.allocator.dupe(u8, entry.path);
+                    const full_path = try self.allocator.dupe(u8, entry.path);
+                    const file_name = try self.allocator.dupe(u8, entry.basename);
+                    checksum = try self.allocator.dupe(u8, checksum);
+
                     const trackedFile = TrackedFiles.FileMetadata{
-                        .full_path = entry.path,
-                        .file_name = entry.basename,
+                        .full_path = full_path,
+                        .file_name = file_name,
                         .state = FileState.Added,
                         .timestamp = stat.mtime,
                         .checksum = checksum,
                         .size = stat.size,
                     };
                     try files.put(key, trackedFile);
-                    print("Inserted key: {s}, Pointer: {p}\n", .{ key, &key[0] });
                 }
-
-                // print("Newly tracked file: {s}\n", .{trackedFile.full_path});
             }
         }
     }
