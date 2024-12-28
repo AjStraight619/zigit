@@ -10,6 +10,19 @@ const FileState = enum(u8) {
     Deleted,
 };
 
+fn cmpByValue(context: void, a: []const u8, b: []const u8) bool {
+    _ = context;
+
+    const minLength: usize = if (a.len < b.len) a.len else b.len;
+
+    for (0..minLength) |i| {
+        if (a[i] < b[i]) return true;
+        if (a[i] > b[i]) return false;
+    }
+
+    return a.len < b.len;
+}
+
 pub const TrackedFiles = struct {
     allocator: std.mem.Allocator,
     files: ?std.StringHashMap(FileMetadata),
@@ -18,6 +31,7 @@ pub const TrackedFiles = struct {
     const Self = @This();
 
     const FileMetadata = struct {
+        full_path: []const u8,
         file_name: []const u8,
         state: FileState,
         timestamp: i128,
@@ -25,19 +39,31 @@ pub const TrackedFiles = struct {
         size: u64,
 
         pub fn serialize(self: *FileMetadata, writer: std.fs.File.Writer) !void {
+            try writer.writeInt(u32, @intCast(self.full_path.len), .little);
+            try writer.writeAll(self.full_path);
+
             try writer.writeInt(u32, @intCast(self.file_name.len), .little);
             try writer.writeAll(self.file_name);
+
             try writer.writeInt(u8, @intFromEnum(self.state), .little);
+
             try writer.writeInt(u64, @intCast(self.timestamp), .little);
+
             try writer.writeInt(u32, @intCast(self.checksum.len), .little);
             try writer.writeAll(self.checksum);
+
             try writer.writeInt(u64, self.size, .little);
         }
 
         pub fn deserialize(reader: std.fs.File.Reader, allocator: std.mem.Allocator) !FileMetadata {
+            const full_path_len = try reader.readInt(u32, .little);
+            const full_path = try allocator.alloc(u8, full_path_len);
+            _ = try reader.readAll(full_path);
+
             const file_name_len = try reader.readInt(u32, .little);
             const file_name = try allocator.alloc(u8, file_name_len);
             _ = try reader.readAll(file_name);
+
             const raw_state = try reader.readInt(u8, .little);
             const state: FileState = @enumFromInt(raw_state);
             const timestamp = try reader.readInt(u64, .little);
@@ -48,6 +74,7 @@ pub const TrackedFiles = struct {
             const size = try reader.readInt(u64, .little);
 
             return FileMetadata{
+                .full_path = full_path,
                 .file_name = file_name,
                 .state = state,
                 .timestamp = castedTimeStamp,
@@ -102,22 +129,29 @@ pub const TrackedFiles = struct {
 
         if (self.files) |files| {
             // Extract keys
+            //
+
+            print("Files count: {d}\n", .{files.count()});
+
             var keys = try self.allocator.alloc([]const u8, files.count());
-            defer self.allocator.free(keys);
 
             var it = files.iterator();
-            var i = 0;
-            while (try it.next()) |entry| {
-                keys[i] = entry.key;
-                i += 1;
+            var i: usize = 0;
+            while (it.next()) |entry| : (i += 1) {
+                print("entry key before sort: {s}\n", .{entry.key_ptr.*});
+                keys[i] = entry.key_ptr.*;
             }
 
             // Sort keys in ascending order
-            std.sort.block([]const u8, keys, .{}, std.sort.asc([]const u8));
+            std.sort.block([]const u8, keys, {}, cmpByValue);
+
+            for (keys) |key| {
+                print("key after soring: {any}\n", .{key});
+            }
 
             // Serialize entries in sorted order
             for (keys) |key| {
-                const entry = files.get(key) orelse unreachable;
+                var entry = files.get(key) orelse unreachable; // if no entry terminate
                 try entry.serialize(file.writer());
             }
         }
@@ -140,7 +174,7 @@ pub const TrackedFiles = struct {
             defer walker.deinit();
             while (try walker.next()) |entry| {
 
-                // Skip unwanted basenames
+                // Skip unwanted paths
                 if (!utils.shouldProcess(entry.path)) {
                     continue;
                 }
@@ -149,19 +183,21 @@ pub const TrackedFiles = struct {
                 const checksum = try calculateChecksum(entry.path, self.allocator);
                 defer self.allocator.free(checksum);
 
-                const trackedFile = TrackedFiles.FileMetadata{
-                    .file_name = entry.basename,
-                    .state = FileState.Added,
-                    .timestamp = stat.mtime,
-                    .checksum = checksum,
-                    .size = stat.size,
-                };
-
                 if (self.files) |*files| {
-                    try files.put(entry.basename, trackedFile);
+                    const key = try self.allocator.dupe(u8, entry.path); // Key memory managed by caller
+                    const trackedFile = TrackedFiles.FileMetadata{
+                        .full_path = entry.path,
+                        .file_name = entry.basename,
+                        .state = FileState.Added,
+                        .timestamp = stat.mtime,
+                        .checksum = checksum,
+                        .size = stat.size,
+                    };
+                    try files.put(key, trackedFile);
+                    print("Inserted key: {s}, Pointer: {p}\n", .{ key, &key[0] });
                 }
 
-                print("Newly tracked file: {s}\n", .{trackedFile.file_name});
+                // print("Newly tracked file: {s}\n", .{trackedFile.full_path});
             }
         }
     }
